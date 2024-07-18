@@ -80,7 +80,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                     raise RuntimeError("The hessian_data_point_index you provide must match the training data in the training mode!")
                         
 
-            res = gpytorch.module.Module.__call__(*input, **kwargs)   # this will call the forward() function. hessian_data_point_index is in **kwargs.
+            res = gpytorch.module.Module.__call__(*inputs, **kwargs)   # this will call the forward() function. hessian_data_point_index is in **kwargs.
             return res 
         
         #Prior mode
@@ -104,7 +104,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
             # make the prediction:
             # Get the terms that only depend on training data 
             if self.prediction_strategy is None:
-                train_outputs = gpytorch.module.Module.__call__(*input, **kwargs)
+                train_outputs = gpytorch.module.Module.__call__(*train_inputs, hessian_data_point_index= self.training_data_hessian_data_point_index, **kwargs)
 
                 # Create the prediction strategy 
                 RBFHessianPredictionStrategy(
@@ -131,7 +131,10 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                 full_inputs.append(torch.cat([train_input, input], dim=-2))
 
             # Get the joint distribution for training / test data 
-            full_output = gpytorch.module.Module.__call__(*full_inputs, **kwargs)
+            inputs_hessian_data_point_index_in_full_input = inputs_hessian_data_point_index + train_inputs.shape()[-2]
+            full_inputs_hessian_data_point_index = torch.cat((self.training_data_hessian_data_point_index, inputs_hessian_data_point_index_in_full_input))
+
+            full_output = gpytorch.module.Module.__call__(*full_inputs, hessian_data_point_index= full_inputs_hessian_data_point_index, **kwargs)
             if settings.debug().on():
                 if not isinstance(full_output, MultivariateNormal):
                     raise RuntimeError("ExactGP.forward must return a MultivariateNormal")
