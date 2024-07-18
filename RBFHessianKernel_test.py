@@ -1,4 +1,4 @@
-from RBFKernelHessian.RBFHessianKernel import RBFKernelHessian
+from library.RBFHessianKernel import RBFKernelHessian
 import numpy as np 
 import torch 
 from gpytorch import settings 
