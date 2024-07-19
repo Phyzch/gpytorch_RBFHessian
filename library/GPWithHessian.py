@@ -1,7 +1,7 @@
 import numpy as np 
 import torch 
 
-def transform_training_target_into_1d_array(pots, grads, hessians, ndofs, fixdofs, M_H):
+def transform_pots_grads_hessians_into_1d_train_targets(pots, grads, hessians, ndofs, fixdofs, M_H):
     '''
     transform the potential data (V^(1), ... , V^(M)) , gradient data: (dV^(1)/dx, ..., dV^(M)/dx) and Hessian data (d^2 V^(1)/dx^2, ..., d^2 V^(M_H)/dx^2) into a 1d array.
     This 1d array will obey multivariate normal distribution.
@@ -54,4 +54,40 @@ def transform_training_target_into_1d_array(pots, grads, hessians, ndofs, fixdof
     return y 
 
 
+def transform_1d_train_targets_into_pots_grads_hessians(train_targets: torch.Tensor, M: int , ndofs: int, fixdofs: np.ndarray, M_H: int):
+    '''
+    Transform the 1d training targets from the pot, gradient and hessian data
+    :param: M: total number of input data points.
+    :param: ndofs: number of degrees of freedom in input data points.
+    :param: fixdofs: numpy.ndarray. the dof that keep fixed in hessian calculation.
+    :param: M_H: number of data points that contain hessian information.
+    '''
+    nactive = ndofs - len(fixdofs)
+    hessian_triu_size = nactive * (nactive + 1) / 2 
+    targets_size = M * (ndofs + 1) + hessian_triu_size * M_H 
+    
+    batch_shape = train_targets.shape[:-2]
+    assert train_targets.shape[-1] == targets_size, "the size of training target does not match the required data. Current shape: {}, required shape: {}".foramt(train_targets.shape[-1], targets_size)
 
+    pot_data = train_targets[..., :M] 
+    force_data = train_targets[..., M: M * (ndofs + 1)]
+    hessian_data = train_targets[..., M * (ndofs + 1): M * (ndofs + 1) + hessian_triu_size * M_H]
+
+    pots = pot_data 
+    forces = force_data.reshape([*batch_shape, M, ndofs])
+    hessian_triu = hessian_data.reshape([*batch_shape, M_H, hessian_triu_size ])
+    
+    triu_indices = torch.triu_indices([nactive, nactive])
+    triu_1d_indices = triu_indices[0] * nactive + triu_indices[1]
+
+    hessians = torch.zeros([*batch_shape, M_H, nactive * nactive])
+    hessians[..., triu_1d_indices] = hessian_triu 
+    hessians = torch.reshape(hessians, [*batch_shape, M_H, nactive, nactive])
+
+    # from triangle parts of hessian recover the full hessian
+    for i in range(nactive):
+        for j in range(i):
+            hessians[..., i,j] = hessians[..., j,i]
+    
+    return pots, forces, hessians 
+    
