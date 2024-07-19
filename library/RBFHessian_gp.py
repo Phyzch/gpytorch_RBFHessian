@@ -45,7 +45,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         ''' 
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x, x, hessian_data_point_index_1= hessian_data_point_index, hessian_data_point_index2 = hessian_data_point_index)
-        return gpytorch.distributions.Multivariatenormal(mean_x, covar_x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
     
     def __call__(self, *args, **kwargs):
         '''

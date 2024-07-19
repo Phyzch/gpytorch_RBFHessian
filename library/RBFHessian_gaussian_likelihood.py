@@ -125,32 +125,34 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
         return noises_var_operator 
 
 
-    def forward(self, function_samples: Tensor, M= None, M_H= None, **kwargs: Any):
+    def forward(self, function_samples: Tensor, *params, **kwargs: Any):
         '''
         compute the conditional probability p(y|f(x)) of the tensor sample.
         :param: M: number of data points in the 1d data.
         :param: M_H: number of data points that have hessian information.
         '''
-        if M == None:
-            raise RuntimeError("Must provide the M value when computing the conditional probability using likelihood.")
-        if M_H == None:
-            raise RuntimeError("Must provide the M_H value when computing the conditional probability using likelihood")
+        if len(params) != 2:
+            print("Must pass M & M_H into likelihood function.")
+
+        M = params[0]
+        M_H = params[1]
         
         noise = self._shaped_noise_covar(M, M_H).diagonal(dim1= -1, dim2= -2)  # take diagonal part of the matrix.
         return base_distributions.Independent(base_distributions.Normal( function_samples, noise.sqrt()), 1)
 
-    def marginal(self, function_dist: MultivariateNormal, M= None, M_H= None, *params : Any, **kwargs: Any) -> MultivariateNormal:
+    def marginal(self, function_dist: MultivariateNormal, *params : Any, **kwargs: Any) -> MultivariateNormal:
         r"""
         compute the marginal probability p(y|X), marginalize over f(X).
         :param: function_dist: latent function distribution f(X). MultivariateNormal distribution.
         :param: M: number of data points in the 1d data.
         :param: M_H: number of data points that have hessian information.
         """
-        if M == None:
-            raise RuntimeError("Must provide the M value when computing the conditional probability using likelihood.")
-        if M_H == None:
-            raise RuntimeError("Must provide the M_H value when computing the conditional probability using likelihood")
-        
+        if len(params) != 2:
+            print("Must pass M & M_H into likelihood function.")
+
+        M = params[0]
+        M_H = params[1]
+
         mean, covar = function_dist.mean, function_dist.lazy_covariance_matrix
 
                 # ensure that sumKroneckerLT is actually called

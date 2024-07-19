@@ -18,9 +18,12 @@ class RBFHessianPredictionStrategy(DefaultPredictionStrategy):
         self.train_inputs = train_inputs  # input X  
         self.train_prior_dist = train_prior_dist  # prior distribution f(X)
         self.train_labels = train_labels # targets (train_y)
-        self.likelihood = likelihood 
+        self.likelihood = likelihood   # the likelihood here is the RBFHessianGaussianLikelihood instance.
 
-        mvn = self.likelihood(train_prior_dist, train_inputs)  # probability distribution of trained_y 
+        M_H = len(training_data_hessian_data_point_index)
+        M = train_inputs.shape[-2]
+
+        mvn = self.likelihood(train_prior_dist, M, M_H)  # probability distribution of trained_y 
         self.lik_train_train_covar = mvn.lazy_covariance_matrix  # K(X,X) + sigma^2 I 
 
         self.training_data_hessian_data_point_index = training_data_hessian_data_point_index 
