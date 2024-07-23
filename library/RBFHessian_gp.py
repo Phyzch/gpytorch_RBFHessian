@@ -37,6 +37,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         nactive = ard_num_dims - len(hessian_fixdofs)
         hessian_triu_size = int(nactive * (nactive + 1) / 2)
 
+        self.hessian_triu_size = hessian_triu_size
+
         target_len = data_num * (ard_num_dims + 1) + hessian_triu_size  * len(training_data_hessian_data_point_index)
         assert len(train_targets) == target_len, "the length of target data is wrong."
         
@@ -194,6 +196,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
     
+        
+
     def __call__(self, *args, **kwargs):
         '''
         *args are new input data (either training inputs or test inputs)
@@ -291,10 +295,126 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
             full_mean, full_covar = full_output.loc, full_output.lazy_covariance_matrix
 
             # Make the prediction
-            with settings.cg_tolerance(settings.eval_cg_tolerance.value()):
+            with settings.cg_tolerance(settings.eval_cg_tolerance.value()) and settings.fast_pred_var(True):
                 (
                     predictive_mean,
                     predictive_covar,
                 ) = self.prediction_strategy.exact_prediction(full_mean, full_covar, inputs_hessian_data_point_index, inputs[0].shape[-2] )
 
             return full_output.__class__(predictive_mean, predictive_covar)
+        
+
+def train_gpr_model(model: GPModelWithHessians, training_error_cutoff= np.power(10.0, -3)):
+    '''
+    the function that train the GPR model.
+    :param: model: GPR model with Hessian information.
+    :param: training_error_cutoff: train until the change of loss function is smaller than the cutoff.
+
+    :return: None
+    '''
+     # set model & likelihood to the training mode
+    likelihood = model.likelihood 
+    model.train() 
+    likelihood.train() 
+
+    train_inputs = model.train_inputs[0]
+    train_targets = model.train_targets 
+
+    M = train_inputs.shape[-2]
+    M_H = len(model.training_data_hessian_data_point_index)
+
+    # choose the optimizer for the training to train the parameter of models (raw_parameter)
+    # https://pytorch.org/docs/stable/generated/torch.optim.Adam.html
+    optimizer = torch.optim.Adam(model.parameters(), lr = 0.1)  
+
+    # define loss function for GPs. -- we choose the marginal log likelihood
+    # because we need to maximise the marginal log likelihood, we should define the loss function as -mll
+    mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
+
+     # initialize loss_func_change and old_loss to enable while loop
+    loss_func_change = 1000
+    old_loss_value = 1000
+
+    train_counts = 0 
+    train_counts_output = 20
+
+    while loss_func_change > training_error_cutoff:
+        # reset the gradients of all optimized torch.Tensor 
+        optimizer.zero_grad()   
+        # output from model training data
+        output = model(train_inputs)
+        # calculate the loss function. here the returned loss is a torch.tensor.
+        loss = - mll(output, train_targets, M, M_H)
+
+        loss_value = loss.item() 
+
+        # calculate the change of loss function to decide whether we will stop the loop.
+        loss_func_change = np.abs(loss_value - old_loss_value)
+        old_loss_value = loss_value 
+
+        # back propagation the loss function to compute the gradient of each parameter 
+        loss.backward()
+        
+        # optimizer optimize the parameter using the gradient info.
+        optimizer.step()
+
+        train_counts = train_counts + 1 
+        
+        if train_counts % train_counts_output == 0:
+            print("Iter %d - Loss: %.3f" %(
+                train_counts, 
+                loss.item())
+            )
+    
+    print("Iter %d - Loss: %.3f" %(
+                train_counts, 
+                loss.item()))
+    
+    pass
+
+def update_model_with_new_data(model: GPModelWithHessians, new_train_inputs: torch.Tensor, new_train_targets: torch.Tensor, new_train_data_hessian_data_point_index: torch.Tensor):
+    '''
+    Add new training input data and training target data.
+    '''
+    train_inputs = model.train_inputs[0]
+    train_targets = model.train_targets
+    train_data_hessian_data_point_index = model.training_data_hessian_data_point_index.clone() 
+
+    train_data_num = train_inputs.shape[-2]
+    new_train_data_num = new_train_inputs.shape[-2]
+
+    ard_num_dim = model.ard_num_dims   # number of dimensions for automatic resonance determination (number of degrees of freedom)
+    hessian_triu_size = model.hessian_triu_size  # size of upper triangular part of hessian.
+
+    M_H = len(train_data_hessian_data_point_index)
+    new_M_H = len(new_train_data_hessian_data_point_index)
+
+    assert type(new_train_inputs) == torch.Tensor, "the data type of new_train_inputs need to be torch.Tensor"
+    assert type(new_train_targets) == torch.Tensor, "the data type of new train targets need to be torch.Tensor"
+    assert type(new_train_data_hessian_data_point_index) == torch.Tensor, "the data type of new_train_data_hessian_data_point_index need to be torch.Tensor"
+
+    # new hessian data point index
+    new_train_data_hessian_data_point_index_in_full_data = new_train_data_hessian_data_point_index + train_data_num 
+    full_train_data_hessian_data_point_index = torch.concat((train_data_hessian_data_point_index, new_train_data_hessian_data_point_index_in_full_data), dim= 0)
+    model.training_data_hessian_data_point_index = full_train_data_hessian_data_point_index
+
+    # new training inputs
+    full_train_inputs = torch.cat( (train_inputs, new_train_inputs), dim= -2)
+
+    # new training targets 
+    full_targets_pot = torch.cat((train_targets[..., : train_data_num], 
+                                    new_train_targets[..., : new_train_data_num]) , 
+                                    dim= -1)
+    full_targets_grads = torch.cat((train_targets[..., train_data_num: train_data_num * (ard_num_dim + 1)],  
+                                    new_train_targets[..., new_train_data_num: new_train_data_num * (ard_num_dim + 1)]), 
+                                    dim= -1)
+    full_targets_hessian = torch.cat(( train_targets[..., train_data_num * (ard_num_dim + 1): train_data_num * (ard_num_dim + 1) + hessian_triu_size * M_H],
+                                        new_train_targets[..., new_train_data_num * (ard_num_dim + 1) : new_train_data_num * (ard_num_dim + 1) + hessian_triu_size * new_M_H] ) , 
+                                        dim= -1)
+
+    full_train_targets = torch.cat((full_targets_pot, full_targets_grads, full_targets_hessian) , dim= -1)
+
+    model.set_train_data(full_train_inputs, full_train_targets, strict= False)
+
+    # re-train the model to update the hyper parameter
+    train_gpr_model(model)

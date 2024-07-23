@@ -3,6 +3,7 @@ import torch
 import gpytorch 
 from library.RBFHessian_gp import GPModelWithHessians 
 from library.GPWithHessian import transform_1d_train_targets_into_pots_grads_hessians
+import library.RBFHessian_gp as RBFHessian_gp
 
 def prepare_likelihood_noise(ndof, hessian_triu_size):
     '''
@@ -85,7 +86,7 @@ def prepare_training_inputs():
     xv, yv = torch.meshgrid(torch.linspace(0,1,10) , torch.linspace(0,1,10), indexing = 'ij' )
     
     M = xv.numel()
-    hessian_data_point_index = torch.tensor([10, 30, 50, 70, 90])
+    hessian_data_point_index = torch.arange(0, 100, 3)
     
     train_inputs = torch.cat(
         (
@@ -132,9 +133,9 @@ def prepare_test_data(test_data_number, test_data_hessian_data_point_index):
 
 
 def model_training(model:GPModelWithHessians, train_inputs: torch.Tensor, train_targets: torch.Tensor):
-    training_iter = 300 
+    training_iter = 1000 
 
-    # Fine optimal model hyper-parameter 
+    # Find optimal model hyper-parameter 
     likelihood = model.likelihood 
     model.train() 
     likelihood.train() 
@@ -172,10 +173,10 @@ def model_prediction(model:GPModelWithHessians):
     model.eval() 
 
     # Test points 
-    test_data_number = 3 
+    test_data_number = 10 
     training_inputs = model.train_inputs[0] 
     ndofs = training_inputs.shape[-1]
-    test_data_hessian_data_point_index = torch.tensor([0])
+    test_data_hessian_data_point_index = torch.tensor([0, 2, 4, 8])
     
     # generate inputs and targets for the test set.
     test_inputs, test_targets = prepare_test_data(test_data_number, test_data_hessian_data_point_index)
@@ -195,6 +196,47 @@ def model_prediction(model:GPModelWithHessians):
 
     return test_inputs, test_targets, pots, grads, hessians 
 
+def add_training_inputs(model:GPModelWithHessians):
+    '''
+    Add more data points into the training data.
+    '''
+    ndof = 2 
+    hessian_fixdofs = torch.tensor([])
+    nactive = int(ndof - len(hessian_fixdofs))
+    hessian_triu_size = int((nactive + 1) * nactive / 2)
+
+    xv, yv = torch.meshgrid(torch.linspace(0,1,10) + 0.05 , torch.linspace(0,1,10) + 0.05, indexing = 'ij' )
+    
+    M = xv.numel()
+    new_hessian_data_point_index = torch.arange(0, 100, 5)
+    
+    new_train_inputs = torch.cat(
+        (
+        xv.contiguous().view(xv.numel(), 1),
+        yv.contiguous().view(yv.numel(), 1)
+        ),
+        dim = 1
+    )
+    train_x_with_hessian = torch.index_select(new_train_inputs, dim= 0, index= new_hessian_data_point_index)
+    f, gradient = franke(new_train_inputs[:, 0], new_train_inputs[:, 1])
+    hessian = franke_hessian(train_x_with_hessian[:, 0], train_x_with_hessian[:, 1])
+    
+    # add noise to the function, gradient and hessian.  The value here should match perpare_likelihood_noise()
+    pot_noise = np.power(10.0, -3)
+    force_noise = np.power(10.0, -2)
+    hessian_noise = np.power(10.0, -2)
+
+    f = f + pot_noise * torch.rand(len(f))
+    gradient = gradient + force_noise * torch.rand(len(gradient))
+    hessian = hessian + hessian_noise * torch.rand(len(hessian))
+
+    target_len = int(M * (ndof + 1) + hessian_triu_size * len(new_hessian_data_point_index))
+    new_train_targets  = torch.cat( (f, gradient, hessian) , dim= 0 )
+    assert len(new_train_targets) == target_len, "the length of target data is wrong."
+
+    RBFHessian_gp.update_model_with_new_data(model, new_train_inputs, new_train_targets, new_hessian_data_point_index)
+    
+
 def test_RBFHessianGP():
     # generate input data 
     train_inputs, train_targets, hessian_fixdofs, hessian_data_point_index = prepare_training_inputs()
@@ -210,15 +252,26 @@ def test_RBFHessianGP():
     # generate outputscale and lengthscale for the kernel
     kernel_outputscale, kernel_length_scale_ratio = prepare_kernel_prior(ndof, gpr_SE_kernel_number)
     
+    # create Gaussian Process Regression model
     gp_model = GPModelWithHessians(train_inputs, train_targets,
                                    hessian_data_point_index, hessian_fixdofs,
                                     gpr_SE_kernel_number, 
                                     kernel_outputscale, kernel_length_scale_ratio,
                                     pot_noise, force_noise, hessian_noise)
     
-    model_training(gp_model, train_inputs, train_targets)
+    # train the model on the training data
+    # model_training(gp_model, train_inputs, train_targets)
+    RBFHessian_gp.train_gpr_model(gp_model)
 
+    # test the model prediction with the test data.
     test_inputs, test_targets, pots, grads, hessians  = model_prediction(gp_model)
+
+    # add more data points to the model.
+    add_training_inputs(gp_model)
+
+    # test the model prediction with the test data.
+    new_test_inputs, new_test_targets, new_pots, new_grads, new_hessians  = model_prediction(gp_model)
+
 
     pass 
 
