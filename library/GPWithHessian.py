@@ -63,7 +63,7 @@ def transform_1d_train_targets_into_pots_grads_hessians(train_targets: torch.Ten
     :param: M_H: number of data points that contain hessian information.
     '''
     nactive = ndofs - len(fixdofs)
-    hessian_triu_size = nactive * (nactive + 1) / 2 
+    hessian_triu_size = int(nactive * (nactive + 1) / 2) 
     targets_size = M * (ndofs + 1) + hessian_triu_size * M_H 
     
     batch_shape = train_targets.shape[:-2]
@@ -77,17 +77,18 @@ def transform_1d_train_targets_into_pots_grads_hessians(train_targets: torch.Ten
     forces = force_data.reshape([*batch_shape, M, ndofs])
     hessian_triu = hessian_data.reshape([*batch_shape, M_H, hessian_triu_size ])
     
-    triu_indices = torch.triu_indices([nactive, nactive])
+    triu_indices = torch.triu_indices(nactive, nactive)
     triu_1d_indices = triu_indices[0] * nactive + triu_indices[1]
 
-    hessians = torch.zeros([*batch_shape, M_H, nactive * nactive])
-    hessians[..., triu_1d_indices] = hessian_triu 
-    hessians = torch.reshape(hessians, [*batch_shape, M_H, nactive, nactive])
+    upper_triangular_hessians = torch.zeros([*batch_shape, M_H, nactive * nactive])
+    upper_triangular_hessians[..., triu_1d_indices] = hessian_triu 
+    upper_triangular_hessians = torch.reshape(upper_triangular_hessians, [*batch_shape, M_H, nactive, nactive])
 
-    # from triangle parts of hessian recover the full hessian
-    for i in range(nactive):
-        for j in range(i):
-            hessians[..., i,j] = hessians[..., j,i]
+    hessians = upper_triangular_hessians.clone() 
+    for i in range(M_H):
+        upper_triangular_hessian_slice = upper_triangular_hessians[i]
+        hessians[i] = upper_triangular_hessian_slice + upper_triangular_hessian_slice.t() - torch.diag(upper_triangular_hessian_slice.diag())
+    
     
     return pots, forces, hessians 
     

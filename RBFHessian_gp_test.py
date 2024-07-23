@@ -1,16 +1,17 @@
 import numpy as np 
 import torch 
 import gpytorch 
-from .library.RBFHessian_gp import GPModelWithHessians 
-from .library.GPWithHessian import transform_1d_train_targets_into_pots_grads_hessians
+from library.RBFHessian_gp import GPModelWithHessians 
+from library.GPWithHessian import transform_1d_train_targets_into_pots_grads_hessians
 
 def prepare_likelihood_noise(ndof, hessian_triu_size):
     '''
     generate the noise data for potential, force and hessian
     '''
-    pot_noise = np.array([np.power(10.0, -6)]) 
-    force_noise = np.ones([ndof]) * np.power(10.0, -4)
-    hessian_noise = np.ones([hessian_triu_size]) * np.power(10.0, -3)
+    # the standard deviation of the noise.
+    pot_noise = np.array([np.power(10.0, -3)]) 
+    force_noise = np.ones([ndof]) * np.power(10.0, -2)
+    hessian_noise = np.ones([hessian_triu_size]) * np.power(10.0, -2)
 
 
     return pot_noise, force_noise, hessian_noise 
@@ -24,27 +25,114 @@ def prepare_kernel_prior(ndof, gpr_SE_kernel_number):
 
     return kernel_outputscale, kernel_length_scale_ratio
 
+def franke(X: torch.Tensor, Y: torch.Tensor):
+    '''
+    potential and gradient of franke function. https://www.sfu.ca/~ssurjano/franke2d.html
+    '''
+    term1 = .75*torch.exp(-((9*X - 2).pow(2) + (9*Y - 2).pow(2))/4)
+    term2 = .75*torch.exp(-((9*X + 1).pow(2))/49 - (9*Y + 1)/10)
+    term3 = .5*torch.exp(-((9*X - 7).pow(2) + (9*Y - 3).pow(2))/4)
+    term4 = .2*torch.exp(-(9*X - 4).pow(2) - (9*Y - 7).pow(2))
+
+    f = term1 + term2 + term3 - term4
+    dfx = -2*(9*X - 2)*9/4 * term1 - 2*(9*X + 1)*9/49 * term2 + \
+          -2*(9*X - 7)*9/4 * term3 + 2*(9*X - 4)*9 * term4
+    dfy = -2*(9*Y - 2)*9/4 * term1 - 9/10 * term2 + \
+          -2*(9*Y - 3)*9/4 * term3 + 2*(9*Y - 7)*9 * term4
+
+    gradient = torch.cat( (dfx.unsqueeze(-1), dfy.unsqueeze(-1)), dim= 1)
+    gradient = gradient.reshape(gradient.numel())
+
+    return f, gradient
+
+def franke_hessian(X: torch.Tensor,Y: torch.Tensor):
+    '''
+    hessian of franke function. https://www.sfu.ca/~ssurjano/franke2d.html
+    '''
+    term1 = .75*torch.exp(-((9*X - 2).pow(2) + (9*Y - 2).pow(2))/4)
+    term2 = .75*torch.exp(-((9*X + 1).pow(2))/49 - (9*Y + 1)/10)
+    term3 = .5*torch.exp(-((9*X - 7).pow(2) + (9*Y - 3).pow(2))/4)
+    term4 = .2*torch.exp(-(9*X - 4).pow(2) - (9*Y - 7).pow(2))
+
+    dfxx = -81/2 * term1 + 81/4 * (9 * X - 2).pow(2) * term1 + \
+            -18 * 9 / 49 * term2 + (18 / 49 * (9 * X + 1)).pow(2) * term2 + \
+            - 81/2 * term3 + 81 / 4 * (9 * X - 7).pow(2) * term3 + \
+            18 * 9 * term4  - (18 * (9 * X - 4)).pow(2) * term4 
+    
+    dfxy = (-9/2 * (9 * X - 2)) * (-9/2 * (9 * Y - 2)) * term1 + \
+            (-18/49 * (9 * X + 1)) * (-9 / 10) * term2 + \
+            (-9/2 * (9 * X - 7)) * (-9/2 * (9 * Y - 3)) * term3 + \
+            + 18 * (9 * X - 4) * (-18 * (9 * Y - 7)) * term4 
+    
+    dfyy = (-9/2 * 9) * term1 + (9/2 * (9 * Y -2)).pow(2) * term1 + \
+            pow(9/10, 2) * term2 + (-9 / 2 * 9) * term3 + (9 / 2 * (9 * Y - 3)).pow(2) * term3 + \
+           18 * 9 * term4 - (18 * (9 * Y - 7)).pow(2) * term4 
+    
+    hessian_2d = torch.cat( (dfxx.unsqueeze(-1), dfxy.unsqueeze(-1), dfyy.unsqueeze(-1)), dim= 1)
+    hessian = hessian_2d.reshape( hessian_2d.numel() )
+    return hessian
+
 def prepare_training_inputs():
     '''
     generate the input and targets of the training data.
-    '''
-    M = 10 # data number 
-    hessian_data_point_index = torch.tensor([2,3, 5])
+    Use 2d franke function to use as input data. See: https://www.sfu.ca/~ssurjano/franke2d.html
+    '''    
+    ndof = 2 
+    hessian_fixdofs = torch.tensor([])
+    nactive = int(ndof - len(hessian_fixdofs))
+    hessian_triu_size = int((nactive + 1) * nactive / 2)
+
+    xv, yv = torch.meshgrid(torch.linspace(0,1,10) , torch.linspace(0,1,10), indexing = 'ij' )
     
-    ndof = 4 
-    hessian_fixdofs = torch.tensor([1])
-    nactive = ndof - len(hessian_fixdofs)
-    hessian_triu_size = (nactive + 1) * nactive / 2 
+    M = xv.numel()
+    hessian_data_point_index = torch.tensor([10, 30, 50, 70, 90])
+    
+    train_inputs = torch.cat(
+        (
+        xv.contiguous().view(xv.numel(), 1),
+        yv.contiguous().view(yv.numel(), 1)
+        ),
+        dim = 1
+    )
+    train_x_with_hessian = torch.index_select(train_inputs, dim= 0, index= hessian_data_point_index)
+    f, gradient = franke(train_inputs[:, 0], train_inputs[:, 1])
+    hessian = franke_hessian(train_x_with_hessian[:, 0], train_x_with_hessian[:, 1])
+    
+    # add noise to the function, gradient and hessian.  The value here should match perpare_likelihood_noise()
+    pot_noise = np.power(10.0, -3)
+    force_noise = np.power(10.0, -2)
+    hessian_noise = np.power(10.0, -2)
 
-    train_inputs = torch.tensor(np.random.random([M , ndof]))
+    f = f + pot_noise * torch.rand(len(f))
+    gradient = gradient + force_noise * torch.rand(len(gradient))
+    hessian = hessian + hessian_noise * torch.rand(len(hessian))
 
-    target_len = M * ndof + hessian_triu_size * len(hessian_data_point_index)
-    train_targets  = torch.tensor(np.random.random([target_len]))
+    target_len = int(M * (ndof + 1) + hessian_triu_size * len(hessian_data_point_index))
+    train_targets  = torch.cat( (f, gradient, hessian) , dim= 0 )
+    assert len(train_targets) == target_len, "the length of target data is wrong."
 
     return train_inputs, train_targets, hessian_fixdofs, hessian_data_point_index 
 
+def prepare_test_data(test_data_number, test_data_hessian_data_point_index):
+    '''
+    prepare the test_inputs and test target for the 2d franke function.
+    '''
+    ndofs = 2 
+    test_inputs = torch.rand(test_data_number, ndofs)
+    test_inputs_with_hessian = torch.index_select(test_inputs, dim= 0, index= test_data_hessian_data_point_index)
+
+    f, gradient = franke(test_inputs[:, 0], test_inputs[:, 1])
+    hessian = franke_hessian(test_inputs_with_hessian[:, 0], test_inputs_with_hessian[:, 1])
+
+    test_targets = torch.cat((f, gradient, hessian), dim= 0)
+
+    return test_inputs, test_targets
+
+
+
+
 def model_training(model:GPModelWithHessians, train_inputs: torch.Tensor, train_targets: torch.Tensor):
-    training_iter = 20 
+    training_iter = 300 
 
     # Fine optimal model hyper-parameter 
     likelihood = model.likelihood 
@@ -52,15 +140,18 @@ def model_training(model:GPModelWithHessians, train_inputs: torch.Tensor, train_
     likelihood.train() 
 
     # Use the adam optimizer 
-    optimizer = torch.optim.Adam(model.parameters, lr= 0.05)
+    optimizer = torch.optim.Adam(model.parameters(), lr= 0.05)
 
     # "Loss" for GPS -- the marginal log likelihood 
     mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
 
+    M = train_inputs.shape[-2]  # total number of data points.
+    M_H = len(model.training_data_hessian_data_point_index)  # number of data points have hessian info
+
     for i in range(training_iter):
         optimizer.zero_grad() 
         output = model(train_inputs)  # MultivariateNormal distribution
-        loss = -mll(output, train_targets)  # loss function: minus log marginal likelihood 
+        loss = -mll(output, train_targets, M, M_H)  # loss function: minus log marginal likelihood 
         loss.backward() 
 
         print("Iter %d/%d - Loss: %.3f" %(
@@ -82,30 +173,34 @@ def model_prediction(model:GPModelWithHessians):
 
     # Test points 
     test_data_number = 3 
-    training_inputs = model.train_inputs 
+    training_inputs = model.train_inputs[0] 
     ndofs = training_inputs.shape[-1]
-    test_inputs = torch.tensor(np.random.random([test_data_number, ndofs]))
+    test_data_hessian_data_point_index = torch.tensor([0])
+    
+    # generate inputs and targets for the test set.
+    test_inputs, test_targets = prepare_test_data(test_data_number, test_data_hessian_data_point_index)
 
-    M = training_inputs.shape[-2]
     fixdofs = model.hessian_fixdofs 
-    M_H = len(model.training_data_hessian_data_point_index)
+    test_M_H = len(test_data_hessian_data_point_index)
+
     # Make predictions 
     with torch.no_grad():
-        prediction_latent_function = model(test_inputs)
-        predictions = likelihood(prediction_latent_function)
+        prediction_latent_function = model(test_inputs, inputs_hessian_data_point_index= test_data_hessian_data_point_index)
+        predictions = likelihood(prediction_latent_function, test_data_number, test_M_H)
 
-        mean = predictions.mean 
+        test_prediction_mean = predictions.mean 
 
-        pots, grads, hessians = transform_1d_train_targets_into_pots_grads_hessians(mean, M, ndofs, fixdofs, M_H)
+        pots, grads, hessians = transform_1d_train_targets_into_pots_grads_hessians(test_prediction_mean, test_data_number, 
+                                                                                    ndofs, fixdofs, test_M_H)
 
-    return pots, grads, hessians 
+    return test_inputs, test_targets, pots, grads, hessians 
 
 def test_RBFHessianGP():
     # generate input data 
     train_inputs, train_targets, hessian_fixdofs, hessian_data_point_index = prepare_training_inputs()
-    M, ndof = train_inputs.shape()
+    M, ndof = train_inputs.shape
     nactive = ndof - len(hessian_fixdofs)
-    hessian_triu_size = nactive * (nactive + 1) / 2 
+    hessian_triu_size = int(nactive * (nactive + 1) / 2) 
 
     gpr_SE_kernel_number = 1 
     
@@ -123,5 +218,8 @@ def test_RBFHessianGP():
     
     model_training(gp_model, train_inputs, train_targets)
 
-    pots, grads, hessians  = model_prediction(gp_model)
-    
+    test_inputs, test_targets, pots, grads, hessians  = model_prediction(gp_model)
+
+    pass 
+
+test_RBFHessianGP()

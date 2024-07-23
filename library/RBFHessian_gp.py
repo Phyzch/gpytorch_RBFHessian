@@ -32,16 +32,26 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         ard_num_dims = train_inputs.shape[-1]
         data_num = train_inputs.shape[-2]
 
+        self.ard_num_dims = ard_num_dims 
+
+        nactive = ard_num_dims - len(hessian_fixdofs)
+        hessian_triu_size = int(nactive * (nactive + 1) / 2)
+
+        target_len = data_num * (ard_num_dims + 1) + hessian_triu_size  * len(training_data_hessian_data_point_index)
+        assert len(train_targets) == target_len, "the length of target data is wrong."
+        
+        # set the likelihood function 
+        likelihood = self._set_likelihood_noise_prior(train_inputs, likelihood_pot_noise, likelihood_force_noise, likelihood_hessian_noise)
+
+        super(GPModelWithHessians, self).__init__(train_inputs, train_targets, likelihood)
+
         # constraint for mean:
         self._set_mean_function(train_inputs, train_targets)
 
         # set the covariance function (kernel) for Gaussian Process regression.
         self._set_gpr_kernel(train_inputs, gpr_SE_kernel_number, kernel_outputscale, kernel_lengthscale_ratio)
 
-        # set the likelihood function 
-        likelihood = self._set_likelihood_noise_prior(train_inputs, likelihood_pot_noise, likelihood_force_noise, likelihood_hessian_noise)
 
-        super(GPModelWithHessians, self).__init__(train_inputs, train_targets, likelihood)
 
     def _set_mean_function(self, train_inputs, train_targets):
         '''
@@ -50,7 +60,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         data_num = train_inputs.shape[-2]
         mean_constant_estimate = torch.mean(train_targets[..., :data_num], dim= -1)
         self.mean_module = ConstantMeanHessian()
-        self.mean_module.constant = torch.nn.Parameter(mean_constant_estimate)  # set the constant (size 1) as mean value of prior 
+        self.mean_module.constant = mean_constant_estimate  # set the constant (size 1) as mean value of prior 
 
     def _set_gpr_kernel(self, train_inputs, gpr_SE_kernel_number, kernel_outputscale, kernel_lengthscale_ratio):
         '''
@@ -72,7 +82,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         for i in range(gpr_SE_kernel_number):
             # The prior distribution of the length scale of the parameter is decided by the initial training inputs (we only provides the ratio).
             # this is bad for cross validation, but for simply training model, it works fine.
-            train_inputs_range = torch.max(train_inputs, dim= 0) - torch.min(train_inputs , dim= 0)
+            train_inputs_range = torch.max(train_inputs, dim= 0).values - torch.min(train_inputs , dim= 0).values 
             length_scale = torch.from_numpy(kernel_lengthscale_ratio[i]) * train_inputs_range 
             length_gamma_beta = torch.div(length_gamma_alpha, length_scale)
 
@@ -83,13 +93,16 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
             outputscale_prior = gpytorch.priors.GammaPrior(output_gamma_alpha, output_gamma_alpha / output_scale) 
 
             # add lengthscale constraint
-            length_scale_ratio_cutoff = 0,1 
+            length_scale_ratio_cutoff = 0.1 
             length_scale_cutoff = length_scale_ratio_cutoff * train_inputs_range 
             lengthscale_constraint = gpytorch.constraints.GreaterThan(length_scale_cutoff) 
 
             # set Squared exponential kernel function 
-            base_kernel = gpytorch.kernels.RBFKernelGrad(ard_num_dims= ard_num_dims, 
-                                                         lengthscale_prior= lengthscale_prior, lengthscale_constraint= lengthscale_constraint)
+            base_kernel = RBFKernelHessian(ard_num_dims= ard_num_dims, 
+                                            lengthscale_prior= lengthscale_prior, 
+                                            lengthscale_constraint= lengthscale_constraint,
+                                            hessian_fixdofs= self.hessian_fixdofs
+                                            )
             
             covar_module = gpytorch.kernels.ScaleKernel(base_kernel, outputscale_prior = outputscale_prior)
 
@@ -118,16 +131,20 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         batch_shape = train_inputs.shape[:-2]
 
         nactive = ard_num_dims - len(self.hessian_fixdofs)
-        hessian_triu_size = (nactive + 1) * nactive / 2 
+        hessian_triu_size = int((nactive + 1) * nactive / 2)
 
         # First: check the shape of the potential noise and force noise 
         assert likelihood_pot_noise.shape[0] == 1, "the shape of potential noise in GPR model is wrong. The current shape is {}, the right shape is {}".format(likelihood_pot_noise.shape[0], 1)
         assert likelihood_force_noise.shape[0] == ard_num_dims, "the shape of the force noise in GPR model is wrong. The current shape is {}, the right shape is {}".format(likelihood_force_noise.shape[0], ard_num_dims)
-        assert likelihood_hessian_noise.shape[0] == ard_num_dims, "the shape of hessian noise in GPR model is wrong. The current shape is {}, the right shape is {}".format(likelihood_hessian_noise.shape[0], hessian_triu_size)
+        assert likelihood_hessian_noise.shape[0] == hessian_triu_size, "the shape of hessian noise in GPR model is wrong. The current shape is {}, the right shape is {}".format(likelihood_hessian_noise.shape[0], hessian_triu_size)
+
+        likelihood_pot_noise_var = np.power(likelihood_pot_noise, 2)
+        likelihood_force_noise_var = np.power(likelihood_force_noise, 2)
+        likelihood_hessian_noise_var = np.power(likelihood_hessian_noise, 2)
 
         # pot noise prior and pot noise constraint
-        pot_noise_mean = torch.from_numpy(likelihood_pot_noise)
-        pot_noise_std = torch.from_numpy(likelihood_pot_noise / 10)
+        pot_noise_mean = torch.from_numpy(likelihood_pot_noise_var)
+        pot_noise_std = torch.from_numpy(likelihood_pot_noise_var / 10)
         pot_noise_prior = gpytorch.priors.NormalPrior(pot_noise_mean, pot_noise_std)
 
         pot_noise_lower_bound = pot_noise_mean.div(10)
@@ -135,8 +152,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         pot_noise_constraint = gpytorch.constraints.Interval(pot_noise_lower_bound, pot_noise_upper_bound)
 
         # force noise prior and force noise constraint:
-        force_noise_mean = likelihood_force_noise
-        force_noise_std = likelihood_force_noise / 10 
+        force_noise_mean = torch.from_numpy(likelihood_force_noise_var)
+        force_noise_std = torch.from_numpy(likelihood_force_noise_var / 10) 
         force_noise_prior = gpytorch.priors.NormalPrior(force_noise_mean, force_noise_std)
 
         force_noise_lower_bound = force_noise_mean.div(10)
@@ -144,8 +161,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         force_noise_constraint = gpytorch.constraints.Interval(force_noise_lower_bound, force_noise_upper_bound)
 
         # hessian noise prior and noise constraint:
-        hessian_noise_mean = likelihood_hessian_noise 
-        hessian_noise_std = likelihood_hessian_noise / 10 
+        hessian_noise_mean = torch.from_numpy(likelihood_hessian_noise_var) 
+        hessian_noise_std = torch.from_numpy(likelihood_hessian_noise_var / 10) 
         hessian_noise_prior = gpytorch.priors.NormalPrior(hessian_noise_mean, hessian_noise_std)
 
         hessian_noise_lower_bound = hessian_noise_mean.div(10)
@@ -165,28 +182,26 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
 
         return likelihood  
 
-    def forward(self,x, hessian_data_point_index= torch.tensor([]), **kwargs):
+    def forward(self,x, inputs_hessian_data_point_index= torch.tensor([]), **kwargs):
         '''
         return the distribution of the training targets
         ''' 
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x, x, hessian_data_point_index_1= hessian_data_point_index, hessian_data_point_index2 = hessian_data_point_index)
+        M_H = len(inputs_hessian_data_point_index)
+        nactive = self.ard_num_dims - len(self.hessian_fixdofs)
+        mean_x = self.mean_module(x, M_H= M_H, nactive= nactive)
+        with settings.lazily_evaluate_kernels(False):
+            covar_x = self.covar_module(x, x, hessian_data_point_index_1= inputs_hessian_data_point_index, hessian_data_point_index_2 = inputs_hessian_data_point_index)
+        
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
     
     def __call__(self, *args, **kwargs):
         '''
         *args are new input data (either training inputs or test inputs)
         **kwargs: key word arguments.
-        :param: hessian_data_point_index is used for covariance matrix (kernel) evaluation.
+        :param: inputs_hessian_data_point_index is used for covariance matrix (kernel) evaluation.
         '''
         train_inputs = list(self.train_inputs) if self.train_inputs is not None else []
         inputs = [i.unsqueeze(-1) if i.ndimension() == 1 else i for i in args]  # make inputs data have 2 dimensions.
-        inputs_hessian_data_point_index = kwargs.get("hessian_data_point_index")
-
-        if inputs_hessian_data_point_index == None:
-            raise RuntimeError("Must provide inputs_hessian_data_point_index for computing kernel.")
-        if  type(inputs_hessian_data_point_index) != torch.Tensor:
-            raise RuntimeError("The inputs_hessian_data_point_index must be a tensor.")
 
         # Training mode: optimizing
         if self.training:
@@ -202,17 +217,20 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                 ):
                     raise RuntimeError("You must train on the training inputs!")
 
-                if not torch.equal(inputs_hessian_data_point_index, self.training_data_hessian_data_point_index):
-                    raise RuntimeError("The hessian_data_point_index you provide must match the training data in the training mode!")
-                        
-
-            res = gpytorch.module.Module.__call__(*inputs, **kwargs)   # this will call the forward() function. hessian_data_point_index is in **kwargs.
+            res = gpytorch.module.Module.__call__(self, *inputs, inputs_hessian_data_point_index= self.training_data_hessian_data_point_index)   # this will call the forward() function. hessian_data_point_index is in **kwargs.
             return res 
         
         #Prior mode
         elif settings.prior_mode.on() or self.train_inputs is None or self.train_targets is None:
             full_inputs = args 
-            full_output = gpytorch.module.Module.__call__(*full_inputs, **kwargs)
+            
+            inputs_hessian_data_point_index = kwargs.get("inputs_hessian_data_point_index")
+            if inputs_hessian_data_point_index == None:
+                raise RuntimeError("Must provide inputs_hessian_data_point_index for computing kernel.")
+            if  type(inputs_hessian_data_point_index) != torch.Tensor:
+                raise RuntimeError("The inputs_hessian_data_point_index must be a tensor.")
+            
+            full_output = gpytorch.module.Module.__call__(self, *full_inputs, **kwargs)
             if settings.debug().on():
                 if not isinstance(full_output, MultivariateNormal):
                     raise RuntimeError("GPModelWithHessian.forward method must return a MultivariateNormal")
@@ -221,6 +239,12 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         
         # Posterior mode: Compute the posterior prediction of the GPR model.
         else:
+            inputs_hessian_data_point_index = kwargs.get("inputs_hessian_data_point_index")
+            if inputs_hessian_data_point_index == None:
+                raise RuntimeError("Must provide inputs_hessian_data_point_index for computing kernel.")
+            if  type(inputs_hessian_data_point_index) != torch.Tensor:
+                raise RuntimeError("The inputs_hessian_data_point_index must be a tensor.")
+    
             if all(torch.equal(train_input, input) for train_input, input in length_safe_zip(train_inputs, inputs)):
                 warnings.warn(
                     "The input matches the stored training data. Did you forget to call model.train()?",
@@ -230,11 +254,11 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
             # make the prediction:
             # Get the terms that only depend on training data 
             if self.prediction_strategy is None:
-                train_outputs = gpytorch.module.Module.__call__(*train_inputs, hessian_data_point_index= self.training_data_hessian_data_point_index, **kwargs)
+                train_outputs = gpytorch.module.Module.__call__(self, *train_inputs, inputs_hessian_data_point_index= self.training_data_hessian_data_point_index)
 
                 # Create the prediction strategy 
-                RBFHessianPredictionStrategy(
-                    train_inputs= train_inputs,
+                self.prediction_strategy = RBFHessianPredictionStrategy(
+                    train_inputs= train_inputs[0],
                     train_prior_dist= train_outputs, 
                     train_labels= self.train_targets, 
                     likelihood= self.likelihood,
@@ -257,10 +281,10 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                 full_inputs.append(torch.cat([train_input, input], dim=-2))
 
             # Get the joint distribution for training / test data 
-            inputs_hessian_data_point_index_in_full_input = inputs_hessian_data_point_index + train_inputs.shape()[-2]
+            inputs_hessian_data_point_index_in_full_input = inputs_hessian_data_point_index + train_inputs[0].shape[-2]
             full_inputs_hessian_data_point_index = torch.cat((self.training_data_hessian_data_point_index, inputs_hessian_data_point_index_in_full_input))
 
-            full_output = gpytorch.module.Module.__call__(*full_inputs, hessian_data_point_index= full_inputs_hessian_data_point_index, **kwargs)
+            full_output = gpytorch.module.Module.__call__(self, *full_inputs, inputs_hessian_data_point_index= full_inputs_hessian_data_point_index)
             if settings.debug().on():
                 if not isinstance(full_output, MultivariateNormal):
                     raise RuntimeError("ExactGP.forward must return a MultivariateNormal")
@@ -271,6 +295,6 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                 (
                     predictive_mean,
                     predictive_covar,
-                ) = self.prediction_strategy.exact_prediction(full_mean, full_covar)
+                ) = self.prediction_strategy.exact_prediction(full_mean, full_covar, inputs_hessian_data_point_index, inputs[0].shape[-2] )
 
             return full_output.__class__(predictive_mean, predictive_covar)

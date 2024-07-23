@@ -56,6 +56,7 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
         self.hessian_triu_size = hessian_triu_size 
 
         # register potential noises, the constraint for the potential noise & the prior for the potential noise
+        # follwoing the convention in gpytorch, here pot_noises are variances of noise 
         self.register_parameter(
             name= "raw_pot_noises", parameter= torch.nn.Parameter(torch.zeros(*batch_shape, 1))
         )
@@ -64,6 +65,7 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
             self.register_prior("raw_pot_noises_prior", pot_noise_prior, lambda m: m.pot_noises)
         
         # register force noise, the constraint for the force noise & the prior for the force noise 
+        # following the convention in gpytorch, here force_noises are variances of noise 
         self.register_parameter(
             name= "raw_force_noises", parameter= torch.nn.Parameter(torch.zeros(*batch_shape, ndof))
         )
@@ -72,6 +74,7 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
             self.register_prior("raw_force_noises_prior", force_noise_prior, lambda m: m.force_noises)
 
         # register hessian noises, the constraint for the hessian noise and the prior for the hessian noise 
+        # following the convention in gpytorch, here hessian_noises are variances of noise 
         self.register_parameter(
             name= "raw_hessian_noises", parameter= torch.nn.Parameter(torch.zeros(*batch_shape, hessian_triu_size))
         )
@@ -82,6 +85,7 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
 
     @property
     def pot_noises(self) -> Optional[Tensor]:
+        # variance of potential noise.
         return self.raw_pot_noises_constraint.transform(self.raw_pot_noises)
     
     @pot_noises.setter
@@ -90,6 +94,7 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
 
     @property
     def force_noises(self) -> Optional[Tensor]:
+        # variance of force noises.
         return self.raw_force_noises_constraint.transform(self.raw_force_noises)
     
     @force_noises.setter
@@ -98,11 +103,12 @@ class RBFHessianGaussianLikelihood(_GaussianLikelihoodBase):
 
     @property
     def hessian_noises(self) -> Optional[Tensor]:
+        # variance of hessian noises.
         return self.raw_hessian_noises_constraint.transform(self.raw_hessian_noises)
     
     @hessian_noises.setter
     def hessian_noises(self, value: Union[float, Tensor]) -> None:
-        self.initialize(self.raw_hessian_noises_constraint.inverse_transform(value))
+        self.initialize(raw_hessian_noises= self.raw_hessian_noises_constraint.inverse_transform(value))
     
     def _shaped_noise_covar(
             self,

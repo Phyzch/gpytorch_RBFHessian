@@ -189,8 +189,11 @@ class RBFKernelHessian(RBFKernel):
         
         nactive = ndofs - len(hessian_fixdofs)  # number of active dofs
         hessian_triu_size = int(nactive * (nactive + 1) / 2)  # size of upper triangular part of hessian matrix.
-
-        active_dims = np.delete(np.arange(ndofs), hessian_fixdofs.numpy()) # index of active dims of hessian.
+        
+        if len(hessian_fixdofs) != 0:
+            active_dims = np.delete(np.arange(ndofs), hessian_fixdofs.numpy()) # index of active dims of hessian.
+        else:
+            active_dims = np.arange(ndofs)
         active_dims = torch.from_numpy(active_dims)
 
         x1WithHessian = x1[..., hessian_data_point_index_1, :] # x1 data points that contain Hessian information. We assume M_H1 is the same across batches.
@@ -258,6 +261,7 @@ class RBFKernelHessian(RBFKernel):
 
         RBF_kernel_1 = postprocess_rbf(self.covar_dist(x1_, x2WithHessian_, square_dist= True))  # squared exponential kernel between x1 and x2WithHessian
         RBF_kernel_2 = postprocess_rbf(self.covar_dist(x1WithHessian_, x2_, square_dist= True)) # squared exponential kernel between x1WithHessian and x2.
+        RBF_kernel_3 = postprocess_rbf(self.covar_dist(x1WithHessian_, x2WithHessian_, square_dist= True)) # squared exponential kernel between x1WithHessian and x2WithHessian
 
         # 5) K13: covariance function between (V^(1), ..., V^(M1)) and (d^2 V^(1)/dx^2, ..., d^2 V^(M_H2)/ dx^2)
         # K13 for full Hessian, it's the case when we include all dofs and have M_H = M (have Hessian for all data points). shape: (M1, M2, d, d)
@@ -386,8 +390,15 @@ class RBFKernelHessian(RBFKernel):
         K33 = take_upper_triangular_part(K33)
 
         K33 = K33.transpose(-2, -3).reshape(*batch_shape, M_H1 * hessian_triu_size, M_H2 * hessian_triu_size)
+        # multiply squared exponential term: exp(-0.5 * (x - y)^2)
+        RBF_K33 = RBF_kernel_3.unsqueeze(-1).unsqueeze(-3).repeat([ *([1] * n_batch_dims), 1, hessian_triu_size, 1, hessian_triu_size ]).reshape(*batch_shape, M_H1 * hessian_triu_size, M_H2 * hessian_triu_size) 
 
+        K33 = K33 * RBF_K33
         K[..., (1 + d) * M1: , (1 + d) * M2 : ] = K33 
+
+        # symmetrize for stability 
+        if M1 == M2 and torch.eq(x1, x2).all():
+            K = 0.5 * (K.transpose(-1, -2) + K)
 
         return K 
         
