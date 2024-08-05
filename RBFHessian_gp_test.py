@@ -2,17 +2,20 @@ import numpy as np
 import torch 
 import gpytorch 
 from library.RBFHessian_gp import GPModelWithHessians 
-from library.GPWithHessian import transform_1d_train_targets_into_pots_grads_hessians
+from library.RBFHessian_utils import transform_1d_train_targets_into_pots_grads_hessians
 import library.RBFHessian_gp as RBFHessian_gp
 
-def prepare_likelihood_noise(ndof, hessian_triu_size):
+def prepare_likelihood_noise(ndofs, hessian_triu_size):
     '''
-    generate the noise data for potential, force and hessian
+    generate the estimated noise for potential, force and hessian.
+    pot_noise: shape: [1]
+    force_noise: shape: [ndofs]
+    hessian_noise: shape: [hessian_triu_size]
     '''
-    # the standard deviation of the noise.
-    pot_noise = np.array([np.power(10.0, -3)]) 
-    force_noise = np.ones([ndof]) * np.power(10.0, -2)
-    hessian_noise = np.ones([hessian_triu_size]) * np.power(10.0, -2)
+    # the variance of the noise.
+    pot_noise = np.power(np.array([np.power(10.0, -3)]), 2)
+    force_noise = np.power(np.ones([ndofs]) * np.power(10.0, -2), 2)
+    hessian_noise = np.power(np.ones([hessian_triu_size]) * np.power(10.0, -2), 2)
 
 
     return pot_noise, force_noise, hessian_noise 
@@ -22,7 +25,7 @@ def prepare_kernel_prior(ndof, gpr_SE_kernel_number):
     generate the prior distribution of the kernel function
     '''
     kernel_outputscale = np.ones([gpr_SE_kernel_number]) * 0.04 
-    kernel_length_scale_ratio = np.ones([gpr_SE_kernel_number, ndof]) * 0.3
+    kernel_length_scale_ratio = np.ones([gpr_SE_kernel_number]) * 0.3
 
     return kernel_outputscale, kernel_length_scale_ratio
 
@@ -246,7 +249,7 @@ def test_RBFHessianGP():
 
     gpr_SE_kernel_number = 1 
     
-    # generate noise:
+    # generate variance of noise:
     pot_noise, force_noise, hessian_noise = prepare_likelihood_noise(ndof, hessian_triu_size)
 
     # generate outputscale and lengthscale for the kernel

@@ -9,30 +9,13 @@ from gpytorch.kernels.rbf_kernel import  RBFKernel
 from typing import Callable, Dict, Iterable, Optional, Tuple, Union
 from gpytorch.priors import Prior
 from gpytorch.constraints import Interval, Positive
+from .RBFHessian_utils import take_upper_triangular_part
 
 def postprocess_rbf(dist_mat):
     dist_mat_ = torch.clone(dist_mat)
     return dist_mat_.div_(-2).exp_()
 
 
-def take_upper_triangular_part(tensor):
-    '''
-    Take the upper triangular part of the matrix of tensor (upper triangular part of last 2 dimensions).
-    :param: tensor: tensor to take the upper triangular part.
-    '''
-    batch_shape = tensor.shape[:-2]
-    size1 = tensor.shape[-2]
-    size2 = tensor.shape[-1]
-
-    if size1 != size2:
-        raise RuntimeError("The matrix we take upper triangular part about is not square matrix.  size1: {},  size2: {}".format(size1, size2))
-
-    triu_indices = torch.triu_indices(size1, size2)
-    triu_1d_indices = triu_indices[0] * size2 + triu_indices[1]
-    # take upper triangular part of last two dimensions of Hessian.
-    upper_triangle_tensor = torch.index_select(torch.reshape(tensor, (*batch_shape, size1 * size2) ), -1, triu_1d_indices)
-
-    return upper_triangle_tensor
 
 def matrix_outer_product_combination_6term(matrix1, matrix2, d):
     '''
