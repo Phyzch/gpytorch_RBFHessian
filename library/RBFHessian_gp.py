@@ -11,6 +11,7 @@ from gpytorch.distributions import MultivariateNormal
 import warnings 
 from gpytorch.utils.warnings import GPInputWarning
 
+
 class GPModelWithHessians(gpytorch.models.ExactGP):
     def __init__(self, train_inputs: torch.Tensor, train_targets: torch.Tensor, 
                  training_data_hessian_data_point_index: torch.Tensor, hessian_fixdofs: torch.Tensor,
@@ -27,7 +28,6 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         '''
         # the data point index that contains the hessian information.
         self.training_data_hessian_data_point_index = training_data_hessian_data_point_index
-
         self.hessian_fixdofs = hessian_fixdofs  # dofs that we will not include in hessian calculations.
         ard_num_dims = train_inputs.shape[-1]
         data_num = train_inputs.shape[-2]
@@ -52,7 +52,6 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
 
         # set the covariance function (kernel) for Gaussian Process regression.
         self._set_gpr_kernel(train_inputs, gpr_SE_kernel_number, kernel_outputscale, kernel_lengthscale_ratio)
-
 
 
     def _set_mean_function(self, train_inputs, train_targets):
@@ -141,8 +140,9 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         assert likelihood_hessian_noise_var.shape[0] == hessian_triu_size, "the shape of hessian noise in GPR model is wrong. The current shape is {}, the right shape is {}".format(likelihood_hessian_noise.shape[0], hessian_triu_size)
 
         # pot noise prior and pot noise constraint
-        pot_noise_mean = torch.from_numpy(likelihood_pot_noise_var)
-        pot_noise_std = torch.from_numpy(likelihood_pot_noise_var / 10)
+        device = train_inputs.device 
+        pot_noise_mean = torch.from_numpy(likelihood_pot_noise_var).to(device= device)
+        pot_noise_std = torch.from_numpy(likelihood_pot_noise_var / 10).to(device= device)
         pot_noise_prior = gpytorch.priors.NormalPrior(pot_noise_mean, pot_noise_std)
 
         pot_noise_lower_bound = pot_noise_mean.div(10)
@@ -150,8 +150,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         pot_noise_constraint = gpytorch.constraints.Interval(pot_noise_lower_bound, pot_noise_upper_bound)
 
         # force noise prior and force noise constraint:
-        force_noise_mean = torch.from_numpy(likelihood_force_noise_var)
-        force_noise_std = torch.from_numpy(likelihood_force_noise_var / 10) 
+        force_noise_mean = torch.from_numpy(likelihood_force_noise_var).to(device= device)
+        force_noise_std = torch.from_numpy(likelihood_force_noise_var / 10).to(device= device) 
         force_noise_prior = gpytorch.priors.NormalPrior(force_noise_mean, force_noise_std)
 
         force_noise_lower_bound = force_noise_mean.div(10)
@@ -159,8 +159,8 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
         force_noise_constraint = gpytorch.constraints.Interval(force_noise_lower_bound, force_noise_upper_bound)
 
         # hessian noise prior and noise constraint:
-        hessian_noise_mean = torch.from_numpy(likelihood_hessian_noise_var) 
-        hessian_noise_std = torch.from_numpy(likelihood_hessian_noise_var / 10) 
+        hessian_noise_mean = torch.from_numpy(likelihood_hessian_noise_var).to(device= device) 
+        hessian_noise_std = torch.from_numpy(likelihood_hessian_noise_var / 10).to(device= device) 
         hessian_noise_prior = gpytorch.priors.NormalPrior(hessian_noise_mean, hessian_noise_std)
 
         hessian_noise_lower_bound = hessian_noise_mean.div(10)
@@ -172,6 +172,7 @@ class GPModelWithHessians(gpytorch.models.ExactGP):
                                                   pot_noise_prior, pot_noise_constraint,
                                                   force_noise_prior, force_noise_constraint,
                                                   hessian_noise_prior, hessian_noise_constraint)
+        likelihood.to(device= train_inputs.device)
         
         # set the initial value of pot noise, force noise and hessian noise
         likelihood.pot_noises = pot_noise_mean 
@@ -372,9 +373,15 @@ def update_model_with_new_data(model: GPModelWithHessians, new_train_inputs: tor
     '''
     Add new training input data and training target data.
     '''
-    train_inputs = model.train_inputs[0]
-    train_targets = model.train_targets
-    train_data_hessian_data_point_index = model.training_data_hessian_data_point_index.clone() 
+    cuda_available = torch.cuda.is_available()
+    if cuda_available:
+        new_train_inputs = new_train_inputs.cuda()
+        new_train_targets = new_train_targets.cuda() 
+        new_train_data_hessian_data_point_index = new_train_data_hessian_data_point_index.cuda() 
+
+    train_inputs = model.train_inputs[0].to(device= new_train_inputs.device)
+    train_targets = model.train_targets.to(device= new_train_inputs.device)
+    train_data_hessian_data_point_index = model.training_data_hessian_data_point_index.clone().to(device= new_train_inputs.device) 
 
     train_data_num = train_inputs.shape[-2]
     new_train_data_num = new_train_inputs.shape[-2]

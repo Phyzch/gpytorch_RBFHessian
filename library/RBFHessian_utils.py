@@ -24,10 +24,10 @@ def transform_1d_train_targets_into_pots_grads_hessians(train_targets: torch.Ten
     gradients = gradient_data.reshape([*batch_shape, M, ndofs])
     hessian_triu = hessian_data.reshape([*batch_shape, M_H, hessian_triu_size ])
     
-    triu_indices = torch.triu_indices(nactive, nactive)
+    triu_indices = torch.triu_indices(nactive, nactive).to(device= train_targets.device)
     triu_1d_indices = triu_indices[0] * nactive + triu_indices[1]
 
-    upper_triangular_hessians = torch.zeros([*batch_shape, M_H, nactive * nactive])
+    upper_triangular_hessians = torch.zeros([*batch_shape, M_H, nactive * nactive], device= train_targets.device)
     upper_triangular_hessians[..., triu_1d_indices] = hessian_triu 
     upper_triangular_hessians = torch.reshape(upper_triangular_hessians, [*batch_shape, M_H, nactive, nactive])
 
@@ -51,8 +51,8 @@ def take_upper_triangular_part(tensor):
     if size1 != size2:
         raise RuntimeError("The matrix we take upper triangular part about is not square matrix.  size1: {},  size2: {}".format(size1, size2))
 
-    triu_indices = torch.triu_indices(size1, size2)
-    triu_1d_indices = triu_indices[0] * size2 + triu_indices[1]
+    triu_indices = torch.triu_indices(size1, size2).to(device= tensor.device)
+    triu_1d_indices = (triu_indices[0] * size2 + triu_indices[1])
     # take upper triangular part of last two dimensions of Hessian.
     upper_triangle_tensor = torch.index_select(torch.reshape(tensor, (*batch_shape, size1 * size2) ), -1, triu_1d_indices)
 

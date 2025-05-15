@@ -137,15 +137,16 @@ class RBFHessianPredictionStrategy(DefaultPredictionStrategy):
 
         d = self.d # dimensions of the input data 
         hessian_triu_size = self.hessian_triu_size 
-
-        training_target_pots_index = torch.arange(start= 0, end= M1)
-        training_target_grads_index = torch.arange(start= (M1 + M2), end= (M1 + M2) + M1 * d)
-        training_target_hessian_index = torch.arange(start= (M1 + M2) * (d + 1), end= (M1 + M2) * (d + 1) + MH_1 * hessian_triu_size)
+        
+        device = joint_mean.device
+        training_target_pots_index = torch.arange(start= 0, end= M1, device= device)
+        training_target_grads_index = torch.arange(start= (M1 + M2), end= (M1 + M2) + M1 * d, device= device)
+        training_target_hessian_index = torch.arange(start= (M1 + M2) * (d + 1), end= (M1 + M2) * (d + 1) + MH_1 * hessian_triu_size, device= device)
         training_target_index = torch.concat((training_target_pots_index, training_target_grads_index, training_target_hessian_index),  dim= -1)
 
-        test_target_pots_index = torch.arange(start= M1, end= M1 + M2)
-        test_target_grads_index = torch.arange(start= (M1 + M2) + M1 * d, end= (M1+ M2) * (d + 1))
-        test_target_hessian_index = torch.arange(start= (M1 + M2) * (d + 1) + MH_1 * hessian_triu_size, end= (M1 + M2) * (d + 1) + (MH_1 + MH_2) * hessian_triu_size)
+        test_target_pots_index = torch.arange(start= M1, end= M1 + M2, device= device)
+        test_target_grads_index = torch.arange(start= (M1 + M2) + M1 * d, end= (M1+ M2) * (d + 1), device= device)
+        test_target_hessian_index = torch.arange(start= (M1 + M2) * (d + 1) + MH_1 * hessian_triu_size, end= (M1 + M2) * (d + 1) + (MH_1 + MH_2) * hessian_triu_size, device= device)
         test_target_index = torch.concat( (test_target_pots_index, test_target_grads_index, test_target_hessian_index), dim= -1 )
         
         test_mean = torch.index_select(joint_mean, dim= -1, index= test_target_index)

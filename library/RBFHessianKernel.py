@@ -137,14 +137,14 @@ class RBFKernelHessian(RBFKernel):
         if type(hessian_data_point_index_1) == type(None):
             raise RuntimeError("Must provide hessian_data_point_index1 (index of hessian data points that contain hessian information) when using RBFKernelHessian")
         elif type(hessian_data_point_index_1) == np.ndarray:
-            hessian_data_point_index_1 = torch.from_numpy(hessian_data_point_index_1)
+            hessian_data_point_index_1 = torch.from_numpy(hessian_data_point_index_1).device(x1.device)
         elif type(hessian_data_point_index_1) != torch.Tensor:
             raise RuntimeError("the data type of hessian_data_point_index_1 must be torch.Tensor. The data type now is: " + str(type(hessian_data_point_index_1)))
 
         if type(hessian_data_point_index_2) == type(None):
             raise RuntimeError("Must provide hessian_data_point_index2 (index of hessian data points that contain hessian information) when using RBFKernelHessian")
         elif type(hessian_data_point_index_2) == np.ndarray:
-            hessian_data_point_index_2 = torch.from_numpy(hessian_data_point_index_2)
+            hessian_data_point_index_2 = torch.from_numpy(hessian_data_point_index_2).device(x2.device)
         elif type(hessian_data_point_index_2) != torch.Tensor:
             raise RuntimeError("the data type of hessian_data_point_index_2 must be torch.Tensor. The data type now is: " + str(type(hessian_data_point_index_2)))
 
@@ -177,7 +177,7 @@ class RBFKernelHessian(RBFKernel):
             active_dims = np.delete(np.arange(ndofs), hessian_fixdofs.numpy()) # index of active dims of hessian.
         else:
             active_dims = np.arange(ndofs)
-        active_dims = torch.from_numpy(active_dims)
+        active_dims = torch.from_numpy(active_dims).to(device= x1.device)
 
         x1WithHessian = x1[..., hessian_data_point_index_1, :] # x1 data points that contain Hessian information. We assume M_H1 is the same across batches.
         x2WithHessian = x2[..., hessian_data_point_index_2, :] # x2 data points that contain Hessian information. We assume M_H2 is the same across batches.
