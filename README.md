@@ -4,5 +4,4 @@ The conventional GPytorch code is only capable of predicting gradients (derivati
 
 The key module is ./library/RBFHessianKernel.py which I rewrite the kernel function for predicting Hessians.
 
-
-
+The code is able to run both on CPU & GPU (if cuda is available).
